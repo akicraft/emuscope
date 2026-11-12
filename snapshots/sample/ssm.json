@@ -1,0 +1,12 @@
+[
+ {
+  "name": "/sample/app/api-key",
+  "type": "SecureString",
+  "value": "dummy-key-123"
+ },
+ {
+  "name": "/sample/app/log-level",
+  "type": "String",
+  "value": "debug"
+ }
+]

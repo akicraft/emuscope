@@ -1,0 +1,29 @@
+[
+ {
+  "name": "sample-jobs",
+  "attributes": {
+   "MessageRetentionPeriod": "345600",
+   "DelaySeconds": "0",
+   "ReceiveMessageWaitTimeSeconds": "0",
+   "MaximumMessageSize": "1048576",
+   "VisibilityTimeout": "30"
+  },
+  "messages": [
+   {
+    "body": "{\"job\": \"resize\", \"file\": \"images/gradient.png\"}",
+    "messageAttributes": {},
+    "groupId": null
+   },
+   {
+    "body": "{\"job\": \"mail\", \"to\": \"user-1\"}",
+    "messageAttributes": {},
+    "groupId": null
+   },
+   {
+    "body": "plain text message",
+    "messageAttributes": {},
+    "groupId": null
+   }
+  ]
+ }
+]

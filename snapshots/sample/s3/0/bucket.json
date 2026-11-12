@@ -1,0 +1,53 @@
+{
+ "bucket": "sample-bucket",
+ "objects": [
+  {
+   "key": "archive/data.bin",
+   "file": "000000.bin",
+   "contentType": "application/octet-stream",
+   "metadata": {}
+  },
+  {
+   "key": "config/app.json",
+   "file": "000001.bin",
+   "contentType": "application/json",
+   "metadata": {}
+  },
+  {
+   "key": "danger/<img src=x onerror=alert(1)>.txt",
+   "file": "000002.bin",
+   "contentType": "text/plain",
+   "metadata": {}
+  },
+  {
+   "key": "danger/script.html",
+   "file": "000003.bin",
+   "contentType": "text/html",
+   "metadata": {}
+  },
+  {
+   "key": "empty.txt",
+   "file": "000004.bin",
+   "contentType": "text/plain",
+   "metadata": {}
+  },
+  {
+   "key": "images/gradient.png",
+   "file": "000005.bin",
+   "contentType": "image/png",
+   "metadata": {}
+  },
+  {
+   "key": "logs/2026/11/access.csv",
+   "file": "000006.bin",
+   "contentType": "text/csv",
+   "metadata": {}
+  },
+  {
+   "key": "readme.txt",
+   "file": "000007.bin",
+   "contentType": "text/plain",
+   "metadata": {}
+  }
+ ]
+}

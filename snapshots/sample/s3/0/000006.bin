@@ -1,0 +1,3 @@
+time,path,status
+10:00:01,/,200
+10:00:02,/missing,404

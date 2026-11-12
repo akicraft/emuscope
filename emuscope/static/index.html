@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="emu-token" content="__EMU_TOKEN__">
+<title>emuscope</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header id="top">
+  <nav id="tabs" aria-label="画面の切り替え">
+    <button type="button" data-view="resources">リソース</button>
+    <button type="button" data-view="calls">APIログ<span id="calls-count"></span></button>
+    <button type="button" data-view="logs">エミュレーターのログ</button>
+    <button type="button" data-view="snapshots">スナップショット</button>
+    <button type="button" data-view="connect">つなぎ方</button>
+  </nav>
+  <div id="emu">
+    <span id="emu-state" class="state">確認中</span>
+    <button type="button" id="emu-restart" class="btn" hidden>再起動して空にする</button>
+    <button type="button" id="emu-toggle" class="btn" hidden>停止</button>
+  </div>
+</header>
+
+<div id="view-resources" class="view split">
+  <nav id="side" aria-label="リソース"></nav>
+  <main id="pane-resources" class="pane"></main>
+</div>
+<main id="view-calls" class="view pane" hidden></main>
+<main id="view-logs" class="view pane" hidden></main>
+<main id="view-snapshots" class="view pane" hidden></main>
+<main id="view-connect" class="view scroll" hidden></main>
+
+<footer id="status"><span id="status-text"></span><span id="toast" role="status"></span></footer>
+
+<dialog id="dlg">
+  <h2 id="dlg-title"></h2>
+  <p id="dlg-message"></p>
+  <input id="dlg-input" type="text" autocomplete="off" spellcheck="false" hidden>
+  <textarea id="dlg-text" class="mono" spellcheck="false" hidden></textarea>
+  <p id="dlg-error" class="error" hidden></p>
+  <div class="dlg-buttons">
+    <button type="button" id="dlg-cancel" class="btn">やめる</button>
+    <button type="button" id="dlg-ok" class="btn primary">OK</button>
+  </div>
+</dialog>
+<input id="file-input" type="file" multiple hidden>
+<script src="/static/app.js"></script>
+</body>
+</html>

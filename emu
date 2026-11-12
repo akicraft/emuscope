@@ -1,0 +1,12 @@
+#!/bin/sh
+# emuscope の入口。どのフォルダから呼んでも動く。
+# 初回だけ、このフォルダの .venv に Boto3 を入れる（Mac全体の Python には触れない）。
+set -e
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+if [ ! -x "$ROOT/.venv/bin/python" ]; then
+  echo "初回の準備: $ROOT/.venv を作って Boto3 を入れます" >&2
+  python3 -m venv "$ROOT/.venv"
+  "$ROOT/.venv/bin/pip" install --quiet -r "$ROOT/requirements.txt"
+fi
+# PYTHONPATH を足しておくと、./emu run で動かしたテストからも emuscope.testing を import できる
+PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" exec "$ROOT/.venv/bin/python" -m emuscope "$@"

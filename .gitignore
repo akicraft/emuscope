@@ -1,0 +1,5 @@
+.emu-home/
+.venv/
+.claude/
+__pycache__/
+*.tmp/

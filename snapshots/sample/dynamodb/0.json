@@ -1,0 +1,113 @@
+{
+ "definition": {
+  "TableName": "sample-users",
+  "AttributeDefinitions": [
+   {
+    "AttributeName": "id",
+    "AttributeType": "N"
+   },
+   {
+    "AttributeName": "team",
+    "AttributeType": "S"
+   }
+  ],
+  "KeySchema": [
+   {
+    "AttributeName": "team",
+    "KeyType": "HASH"
+   },
+   {
+    "AttributeName": "id",
+    "KeyType": "RANGE"
+   }
+  ],
+  "BillingMode": "PAY_PER_REQUEST"
+ },
+ "items": [
+  {
+   "profile": {
+    "M": {
+     "city": {
+      "S": "東京"
+     },
+     "langs": {
+      "L": [
+       {
+        "S": "ja"
+       },
+       {
+        "S": "en"
+       }
+      ]
+     }
+    }
+   },
+   "id": {
+    "N": "1"
+   },
+   "name": {
+    "S": "田中"
+   },
+   "team": {
+    "S": "blue"
+   },
+   "active": {
+    "BOOL": true
+   }
+  },
+  {
+   "team": {
+    "S": "blue"
+   },
+   "id": {
+    "N": "2"
+   },
+   "note": {
+    "NULL": true
+   },
+   "name": {
+    "S": "<b>太字</b>"
+   },
+   "active": {
+    "BOOL": true
+   }
+  },
+  {
+   "tags": {
+    "SS": [
+     "admin",
+     "dev"
+    ]
+   },
+   "team": {
+    "S": "red"
+   },
+   "id": {
+    "N": "1"
+   },
+   "name": {
+    "S": "佐藤"
+   },
+   "active": {
+    "BOOL": true
+   }
+  },
+  {
+   "score": {
+    "N": "12"
+   },
+   "active": {
+    "BOOL": false
+   },
+   "id": {
+    "N": "2"
+   },
+   "name": {
+    "S": "鈴木"
+   },
+   "team": {
+    "S": "red"
+   }
+  }
+ ]
+}
