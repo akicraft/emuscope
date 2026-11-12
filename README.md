@@ -170,7 +170,7 @@ make example
 - 署名は本物と同じように検証される。壊すと `InvalidSignatureException` になる
 - 未実装のAPIは HTTP 501 `NotImplemented` を返す。AWS CLI も Boto3 も再試行しない
 - 試した範囲で未実装だったのは Athena、QuickSight、Cost Explorer の一覧取得
-- Lambda は関数を作れるが、状態が `Pending` のままで実行（invoke）できなかった
+- Lambda は実行（invoke）まで通った。作った直後の2秒ほどは状態が `Pending` で、その間は `ResourceConflictException` になる。本物と同じ挙動
 - Step Functions は実行まで通った。CloudFormation のスタックから、S3 バケットと SQS キューが実際に作られた
 - S3 は1バケットに1000個までしか置けない（本物にはない制限）
 - SNS から SQS への配信は、キューのポリシーで許可していないと届かない。理由はエミュレーターのログに警告として出る
