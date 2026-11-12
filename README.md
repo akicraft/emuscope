@@ -11,6 +11,8 @@ AWS Emulator には画面がなく、止めると中身が全部消える。未�
 
 AWS公式のツールではない。個人の実験で、対応は約束しない。
 
+![APIログの画面。未実装の操作が赤で表示されている](docs/images/api-log.png)
+
 動作を確かめた環境: AWS Emulator 1.0.322 / macOS 26.6（Apple Silicon）/ OrbStack / Python 3.15 / Boto3 1.44.1 / AWS CLI 2.39.3
 
 ## はじめかた
@@ -43,6 +45,8 @@ AWS公式のツールではない。個人の実験で、対応は約束しな�
 
 ### リソース
 
+![リソースの画面。左に種類ごとの一覧、右に S3 バケットの中身](docs/images/resources-s3.png)
+
 | 種類 | できること |
 | --- | --- |
 | S3 | フォルダごとの表示、テキスト・JSON・画像のプレビュー、アップロード（ドラッグも可）、ダウンロード、削除、バケットの作成と削除 |
@@ -51,6 +55,8 @@ AWS公式のツールではない。個人の実験で、対応は約束しな�
 | ほか18種類 | 一覧と詳細。SNS、Lambda、Secrets Manager、SSM パラメーター、CloudWatch Logs、Kinesis、EventBridge、Step Functions、CloudFormation、API Gateway、IAM、KMS、ECR、Cognito、SES、EventBridge Scheduler |
 
 3秒ごとに自動で更新する。入力中やダイアログ表示中は更新を止める。
+
+![DynamoDB のテーブルを開いたところ](docs/images/resources-dynamodb.png)
 
 DynamoDB の編集は、型付きJSON（`{"S": "文字"}` の形）で行う。数値や集合の型を取り違えないため。
 
