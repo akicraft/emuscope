@@ -13,7 +13,7 @@ AWS公式のツールではない。個人の実験で、対応は約束しな�
 
 ![APIログの画面。未実装の操作が赤で表示されている](docs/images/api-log.png)
 
-動作を確かめた環境: AWS Emulator 1.0.322 / macOS 26.6（Apple Silicon）/ OrbStack / Python 3.15 / Boto3 1.44.1 / AWS CLI 2.39.3
+動作を確かめた環境: AWS Emulator 1.0.385（1.0.322 でも確認済み） / macOS 26.6（Apple Silicon）/ OrbStack / Python 3.15 / Boto3 1.44.1 / AWS CLI 2.39.3
 
 ## はじめかた
 
@@ -164,12 +164,12 @@ make example
 
 ## エミュレーターについてわかったこと
 
-作りながら確かめた、AWS Emulator 1.0.322 の挙動。
+作りながら確かめた、AWS Emulator 1.0.322 の挙動。1.0.385 で変わったと確かめた点は、その項目に書いてある。
 
 - エンドポイントは HTTPS で、証明書は自己署名。鍵と証明書は起動のたびに変わる
 - 署名は本物と同じように検証される。壊すと `InvalidSignatureException` になる
 - 未実装のAPIは HTTP 501 `NotImplemented` を返す。AWS CLI も Boto3 も再試行しない
-- 試した範囲で未実装だったのは Athena、QuickSight、Cost Explorer の一覧取得
+- 試した範囲で未実装だったのは Athena、QuickSight、Cost Explorer の一覧取得。1.0.385 では Athena の一覧取得（ListWorkGroups）が実装され、残りの2つはまだ未実装
 - Lambda は実行（invoke）まで通った。作った直後の2秒ほどは状態が `Pending` で、その間は `ResourceConflictException` になる。本物と同じ挙動
 - Step Functions は実行まで通った。CloudFormation のスタックから、S3 バケットと SQS キューが実際に作られた
 - S3 は1バケットに1000個までしか置けない（本物にはない制限）

@@ -7,6 +7,7 @@
 
 import json
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.parse
@@ -276,14 +277,21 @@ class LiveTest(unittest.TestCase):
         via("dynamodb").list_tables()
         via("sqs").list_queues()
         with self.assertRaises(ClientError) as raised:
-            via("athena").list_work_groups()
+            # 1.0.385 時点で未実装の操作。実装されたら、別のまだ未実装の操作に替える
+            via("quicksight").list_users(AwsAccountId="000000000000", Namespace="default")
         self.assertEqual(raised.exception.response["Error"]["Code"], "NotImplemented")
 
-        _, log = self.http.get("/api/calls")
+        # 中継は応答を返してから記録する。操作名の判定に時間がかかるサービスもあるので、記録が出るまで待つ
+        deadline = time.time() + 5
+        while True:
+            _, log = self.http.get("/api/calls")
+            if any(c["status"] == 501 for c in log["calls"]) or time.time() > deadline:
+                break
+            time.sleep(0.1)
         seen = [(c["service"], c["operation"], c["status"]) for c in log["calls"]]
         for expected in [("s3", "CreateBucket", 200), ("s3", "PutObject", 200), ("s3", "GetObject", 200), ("s3", "HeadObject", 200),
                          ("s3", "DeleteObject", 204), ("dynamodb", "ListTables", 200), ("sqs", "ListQueues", 200),
-                         ("athena", "ListWorkGroups", 501)]:
+                         ("quicksight", "ListUsers", 501)]:
             self.assertIn(expected, seen)
         missing = next(c for c in log["calls"] if c["status"] == 501)
         self.assertEqual(missing["error"], "NotImplemented")

@@ -73,8 +73,9 @@ def try_dynamodb() -> None:
 def try_not_implemented() -> None:
     print("--- 未実装API")
     try:
-        boto3.client("athena").list_work_groups()
-        print("athena.list_work_groups: 成功した")
+        # 1.0.385 時点で未実装。Athena の list_work_groups は 1.0.385 で実装された
+        boto3.client("quicksight").list_users(AwsAccountId="000000000000", Namespace="default")
+        print("quicksight.list_users: 成功した")
     except ClientError as e:
         meta = e.response["ResponseMetadata"]
         print(f"例外の型: {type(e).__name__}")
