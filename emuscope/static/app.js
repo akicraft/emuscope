@@ -710,8 +710,10 @@ async function pollCalls() {
   let d;
   try { d = await api("/api/calls", { after: callsLast }); } catch { return; }
   if (d.lastId < callsLast) { calls = []; callsLast = 0; return pollCalls(); }  // サーバーが再起動して番号が戻った
-  if (!d.calls.length) return;
-  calls.push(...d.calls);
+  // 画面の切り替えと1秒ごとの取得が重なると、同じ after で2回取ってくる。取り込み済みの番号は捨てる
+  const fresh = d.calls.filter((c) => c.id > callsLast);
+  if (!fresh.length) return;
+  calls.push(...fresh);
   calls = calls.slice(-2000);
   callsLast = d.lastId;
   renderCallCount();
