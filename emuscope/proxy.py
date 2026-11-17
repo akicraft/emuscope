@@ -26,6 +26,7 @@ from . import config
 
 MAX_CALLS = 2000  # 覚えておく件数。超えたら古いものから捨てる
 SNIPPET = 64 * 1024  # 本文は先頭 64KB まで覚える
+CHUNK = 64 * 1024  # 中継で一度に流す大きさ。本文全体はメモリに載せない
 
 HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers",
               "transfer-encoding", "upgrade", "expect"}
@@ -148,11 +149,49 @@ _calls = collections.deque(maxlen=MAX_CALLS)
 _calls_lock = threading.Lock()
 _ids = itertools.count(1)
 
+# 処理中の要求の数。中継は応答を返してから記録するので、集計を読む前に 0 になるのを待つ
+_inflight = 0
+_idle = threading.Condition()
+
+
+def wait_idle(timeout: float = 10.0) -> bool:
+    """処理中の要求がすべて記録し終わるまで待つ。待ち切れたら True。"""
+    with _idle:
+        return _idle.wait_for(lambda: _inflight == 0, timeout)
+
+
+# 操作ごとの集計。_calls と違って捨てないので、長いテストでも欠けない。
+# (service, operation) -> {"calls", "statuses", "errors", "clients", "ms", "firstId"}
+_stats = {}
+
 
 def _record(entry):
     with _calls_lock:
         entry["id"] = next(_ids)
         _calls.append(entry)
+        key = (entry["service"], entry["operation"])
+        st = _stats.get(key)
+        if st is None:
+            st = _stats[key] = {"calls": 0, "statuses": collections.Counter(), "errors": collections.Counter(),
+                                "clients": set(), "ms": 0.0, "firstId": entry["id"]}
+        st["calls"] += 1
+        st["statuses"][entry["status"]] += 1
+        if entry["error"]:
+            st["errors"][entry["error"]] += 1
+        if entry["client"]:
+            st["clients"].add(entry["client"])
+        st["ms"] += entry["ms"]
+
+
+def summary() -> list[dict]:
+    """操作ごとの集計。対応状況レポート（report.py）の材料になる。"""
+    with _calls_lock:
+        return [
+            {"service": service, "operation": operation, "calls": st["calls"],
+             "statuses": dict(st["statuses"]), "errors": dict(st["errors"]),
+             "clients": sorted(st["clients"]), "ms": round(st["ms"], 1), "firstId": st["firstId"]}
+            for (service, operation), st in _stats.items()
+        ]
 
 
 def calls_after(after_id=0):
@@ -181,6 +220,7 @@ def call_detail(call_id):
 def clear_calls():
     with _calls_lock:
         _calls.clear()
+        _stats.clear()
 
 
 def _show_body(data, content_type, total):
@@ -203,6 +243,24 @@ def _show_body(data, content_type, total):
 
 # ---- 中継 --------------------------------------------------------------------
 
+
+class _Tap:
+    """流れていく本文のうち、先頭 SNIPPET だけと、全体の大きさを覚える。"""
+
+    def __init__(self):
+        self.head = bytearray()
+        self.total = 0
+
+    def add(self, chunk):
+        if len(self.head) < SNIPPET:
+            self.head += chunk[:SNIPPET - len(self.head)]
+        self.total += len(chunk)
+
+    @property
+    def data(self):
+        return bytes(self.head)
+
+
 _ctx = {"stamp": None, "value": None}
 _ctx_lock = threading.Lock()
 
@@ -219,73 +277,154 @@ def _ssl_context():
 class ProxyHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     allowed_hosts = frozenset()
+    upstream = None  # (host, port, ssl_context か None)。None ならエミュレーター
 
     def _handle(self):
+        global _inflight
+        with _idle:
+            _inflight += 1
+        try:
+            self._relay()
+        finally:
+            with _idle:
+                _inflight -= 1
+                _idle.notify_all()
+
+    def _relay(self):
         started = time.time()
         # 宛先が 127.0.0.1 と明記されたリクエストだけ受ける（DNSリバインディング対策）
         if self.headers.get("Host") not in self.allowed_hosts:
             return self._reply(403, {"Content-Type": "application/json"},
                                b'{"__type":"Forbidden","message":"emuscope proxy: unexpected Host header"}')
 
-        body = self._read_body()
         path, _, query = self.path.partition("?")
         headers = {k.lower(): v for k, v in self.headers.items()}
         service = signing_name(headers, query)
+        req, res_tap = _Tap(), _Tap()
+        status, res_headers, broken = 502, [("Content-Type", "application/json")], False
 
+        conn = self._connect()
         try:
-            status, res_headers, res_body = self._forward(body)
-        except (OSError, http.client.HTTPException):
-            status, res_headers = 502, [("Content-Type", "application/json")]
-            res_body = json.dumps({"__type": "EmulatorDown",
+            try:
+                self._send_request(conn, req)
+                res = conn.getresponse()
+            except (OSError, http.client.HTTPException):
+                down = json.dumps({"__type": "EmulatorDown",
                                    "message": "emuscope proxy: エミュレーターに接続できません。./emu up で起動してください。"}).encode()
+                res_tap.add(down)
+                self.close_connection = True  # 要求の本文を読み切れていないかもしれないので、つなぎ直させる
+                try:
+                    self._reply(status, res_headers, down)
+                except OSError:
+                    pass
+            else:
+                status, res_headers = res.status, res.getheaders()
+                try:
+                    self._stream_response(res, res_tap)
+                except (OSError, http.client.HTTPException):
+                    # 応答の途中で切れた。ヘッダーはもう返しているので、接続を切って不完全だと知らせる
+                    broken = True
+                    self.close_connection = True
+        finally:
+            conn.close()
 
-        self._reply(status, res_headers, res_body)
-        res_lower = {k.lower(): v for k, v in (res_headers.items() if isinstance(res_headers, dict) else res_headers)}
+        res_lower = {k.lower(): v for k, v in res_headers}
         if "authorization" in headers:  # 署名の値そのものは覚えない
             headers["authorization"] = re.sub(r"Signature=\w+", "Signature=…", headers["authorization"])
         _record({
             "time": started, "service": service, "method": self.command, "path": path[:300], "query": query[:1000],
-            "operation": resolve_operation(service, self.command, path, query, headers, body),
-            "status": status, "error": error_code(status, res_lower, res_body),
+            "operation": resolve_operation(service, self.command, path, query, headers, req.data),
+            "status": status, "error": "ConnectionBroken" if broken else error_code(status, res_lower, res_tap.data),
             "ms": round((time.time() - started) * 1000, 1),
-            "reqBytes": len(body), "resBytes": len(res_body),
+            "reqBytes": req.total, "resBytes": res_tap.total,
             "client": client_name(headers.get("user-agent", "")),
             "reqHeaders": headers, "resHeaders": res_lower,
-            "reqBody": body[:SNIPPET], "resBody": res_body[:SNIPPET],
+            "reqBody": req.data, "resBody": res_tap.data,
         })
 
     do_GET = do_POST = do_PUT = do_DELETE = do_HEAD = do_PATCH = do_OPTIONS = _handle
 
-    def _read_body(self):
-        if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
-            out = bytearray()
-            while True:
-                size = int(self.rfile.readline().split(b";")[0].strip() or b"0", 16)
-                if size == 0:
-                    while self.rfile.readline() not in (b"\r\n", b"\n", b""):
-                        pass
-                    return bytes(out)
-                out += self.rfile.read(size)
-                self.rfile.read(2)
-        length = int(self.headers.get("Content-Length") or 0)
-        return self.rfile.read(length) if length else b""
+    def _read_chunked(self):
+        out = bytearray()
+        while True:
+            size = int(self.rfile.readline().split(b";")[0].strip() or b"0", 16)
+            if size == 0:
+                while self.rfile.readline() not in (b"\r\n", b"\n", b""):
+                    pass
+                return bytes(out)
+            out += self.rfile.read(size)
+            self.rfile.read(2)
 
-    def _forward(self, body):
-        conn = http.client.HTTPSConnection("127.0.0.1", config.PORT, context=_ssl_context(), timeout=120)
-        try:
-            # Host を含め、ヘッダーは受け取ったまま送る
-            conn.putrequest(self.command, self.path, skip_host=True, skip_accept_encoding=True)
-            for name, value in self.headers.items():
-                if name.lower() not in HOP_BY_HOP and name.lower() != "content-length":
-                    conn.putheader(name, value)
-            # Content-Length は署名に含まれることがある（本文が空の DELETE でも）。受け取っていたら必ず渡す
-            if body or self.headers.get("Content-Length") is not None:
-                conn.putheader("Content-Length", str(len(body)))
+    def _connect(self):
+        if self.upstream is None:
+            return http.client.HTTPSConnection("127.0.0.1", config.PORT, context=_ssl_context(), timeout=120)
+        host, port, ctx = self.upstream
+        if ctx is None:  # テスト用の偽の上流は平文HTTP
+            return http.client.HTTPConnection(host, port, timeout=120)
+        return http.client.HTTPSConnection(host, port, context=ctx, timeout=120)
+
+    def _send_request(self, conn, tap):
+        """要求を上流に送る。本文はメモリに溜めず、CHUNK ずつ流す。"""
+        chunked = "chunked" in self.headers.get("Transfer-Encoding", "").lower()
+        # Host を含め、ヘッダーは受け取ったまま送る
+        conn.putrequest(self.command, self.path, skip_host=True, skip_accept_encoding=True)
+        for name, value in self.headers.items():
+            if name.lower() not in HOP_BY_HOP and name.lower() != "content-length":
+                conn.putheader(name, value)
+        if chunked:
+            # SDK はふつう Content-Length を付けるので、まれ。全部読んでから長さを付けて送る
+            body = self._read_chunked()
+            tap.add(body)
+            conn.putheader("Content-Length", str(len(body)))
             conn.endheaders(body or None)
-            res = conn.getresponse()
-            return res.status, res.getheaders(), res.read()
-        finally:
-            conn.close()
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        # Content-Length は署名に含まれることがある（本文が空の DELETE でも）。受け取っていたら必ず渡す
+        if self.headers.get("Content-Length") is not None:
+            conn.putheader("Content-Length", str(length))
+        conn.endheaders()
+        while length > 0:
+            chunk = self.rfile.read(min(CHUNK, length))
+            if not chunk:
+                raise ConnectionError("クライアントが本文を送り切る前に切断しました")
+            conn.send(chunk)
+            tap.add(chunk)
+            length -= len(chunk)
+
+    def _stream_response(self, res, tap):
+        """上流の応答を、届いた分からそのままクライアントへ流す。"""
+        status = res.status
+        no_body = self.command == "HEAD" or status in (204, 304) or status < 200
+        length = res.getheader("Content-Length")
+        self.send_response(status)
+        for name, value in res.getheaders():
+            lower = name.lower()
+            if lower in HOP_BY_HOP or (lower == "content-length" and not no_body):
+                continue
+            self.send_header(name, value)
+        if no_body:
+            self.end_headers()
+            self.wfile.flush()
+            return
+        if length is not None:
+            self.send_header("Content-Length", length)
+        else:
+            self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        while True:
+            chunk = res.read1(CHUNK)
+            if not chunk:
+                break
+            tap.add(chunk)
+            if length is not None:
+                self.wfile.write(chunk)
+            else:
+                self.wfile.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
+        if length is not None and tap.total != int(length):
+            raise http.client.IncompleteRead(b"", int(length) - tap.total)
+        if length is None:
+            self.wfile.write(b"0\r\n\r\n")
+        self.wfile.flush()
 
     def _reply(self, status, headers, body):
         items = headers.items() if isinstance(headers, dict) else headers
@@ -306,9 +445,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
         pass
 
 
-def make_server(port=None):
-    port = port or config.PROXY_PORT
-    handler = type("EmuProxyHandler", (ProxyHandler,), {
-        "allowed_hosts": frozenset({f"127.0.0.1:{port}", f"localhost:{port}"}),
-    })
-    return ThreadingHTTPServer(("127.0.0.1", port), handler)  # 自分のMacからだけ届く
+def make_server(port=None, upstream=None):
+    """中継サーバーを作る（待ち受けは呼んだ側が serve_forever で始める）。
+
+    port=0 なら空いているポートを OS に選ばせる。実際の番号は server.server_address[1]。
+    upstream: (host, port, ssl_context か None)。省略時はエミュレーター。None の ssl_context は平文HTTP。
+    """
+    port = config.PROXY_PORT if port is None else port
+    handler = type("EmuProxyHandler", (ProxyHandler,), {"upstream": upstream})
+    server = ThreadingHTTPServer(("127.0.0.1", port), handler)  # 自分のMacからだけ届く
+    actual = server.server_address[1]
+    handler.allowed_hosts = frozenset({f"127.0.0.1:{actual}", f"localhost:{actual}"})
+    return server
+
+
+def url_of(server) -> str:
+    return f"http://127.0.0.1:{server.server_address[1]}"

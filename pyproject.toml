@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "emuscope"
+dynamic = ["version"]
+description = "AWS Emulator を使ったローカル開発のための非公式ツール。リソースの閲覧、APIログ、状態の保存と復元。"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["boto3>=1.44"]
+
+[project.urls]
+Repository = "https://github.com/akicraft/emuscope"
+
+[project.scripts]
+emu = "emuscope.__main__:main"
+
+# pip で入れると、pytest がこのプラグインを自動で読み込む
+[project.entry-points.pytest11]
+# 名前をモジュール名と同じにしておくと、conftest.py に pytest_plugins と書いてあっても二重に読み込まれない
+"emuscope.pytest_plugin" = "emuscope.pytest_plugin"
+
+[tool.setuptools]
+packages = ["emuscope"]
+
+[tool.setuptools.dynamic]
+version = { attr = "emuscope.__version__" }
+
+[tool.setuptools.package-data]
+emuscope = ["static/*", "image/Dockerfile"]

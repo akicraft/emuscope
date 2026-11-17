@@ -23,6 +23,8 @@ AWS Emulator を使ったローカル開発の道具（非公式）
   ./emu ui                  画面とAPIログ用の中継を起動する  http://127.0.0.1:9298
   ./emu run -- <コマンド>    エミュレーターに向けてコマンドを実行する
   ./emu run --log -- <...>  同じ。呼び出しを画面の「APIログ」に記録する
+  ./emu record -- <コマンド> 実行して、使ったAPIの対応状況（未実装の操作）を表にする
+  ./emu report              画面のAPIログから、同じ表を作る
   ./emu aws <...>           ./emu run -- aws <...> の短縮形
   ./emu env [--log]         環境変数を表示する   使い方: eval "$(./emu env)"
   ./emu seed                サンプルデータを入れる
@@ -84,6 +86,9 @@ def cmd_doctor(args):
     if check("Docker が動いている", docker.daemon_ok(), "OrbStack / Docker を起動してください"):
         check("イメージがある", docker.image_exists(), "./emu build で作れます")
         if check("エミュレーターのコンテナが動いている", docker.is_running(), "./emu up で起動できます"):
+            mounts = docker.mounted_dirs()
+            check(f"鍵と証明書の場所が一致している（{config.EMU_ROOT}）", not mounts or str(config.EMU_ROOT) in mounts,
+                  f"コンテナは {mounts[0] if mounts else ''} を使っています。止めてから起動し直してください")
             check("ヘルスチェックに応答する", docker.healthy(), "./emu logs を確認してください")
             entries = docker.logs(50)
             check("テレメトリーが無効", any("telemetry: disabled" in e["message"] for e in entries) or not entries,
@@ -129,7 +134,8 @@ def cmd_run(args):
         return 2
     if docker.up(quiet=True):
         print("（エミュレーターを起動しました）", file=sys.stderr)
-    if args.log and not _port_open(config.PROXY_PORT):
+    # ./emu record の中なら、記録はその中継が引き受ける（画面の中継は要らない）
+    if args.log and not os.environ.get(config.RECORD_URL_VAR) and not _port_open(config.PROXY_PORT):
         print("APIログ用の中継が動いていません。別のターミナルで ./emu ui を起動してください。", file=sys.stderr)
         return 1
     try:
@@ -137,6 +143,83 @@ def cmd_run(args):
     except FileNotFoundError:
         print(f"コマンドが見つかりません: {command[0]}", file=sys.stderr)
         return 127
+
+
+STRICT_EXIT = 3  # --strict で未実装の操作があったときの終了コード
+
+
+def _finish_report(rep, args):
+    """レポートを書き出して、終了コードを決める。record と report で共通。"""
+    from . import report
+
+    previous = report.load(args.compare) if args.compare else None
+    if args.out:
+        report.dump(rep, args.out, previous)
+        print(f"レポートを書きました: {args.out}", file=sys.stderr)
+    else:
+        print(report.to_markdown(rep, previous), file=sys.stderr)  # 子の標準出力を汚さない
+    missing = report.unimplemented(rep)
+    if args.strict and missing:
+        print("未実装の操作を使っています: " + ", ".join(f"{o['service']}:{o['operation']}" for o in missing),
+              file=sys.stderr)
+        return STRICT_EXIT
+    return 0
+
+
+def cmd_record(args):
+    """自分で中継を立てて、コマンドを実行し、使った操作を集計する。画面は要らない。"""
+    import subprocess
+
+    from . import proxy, report
+
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if not command:
+        print("実行するコマンドを指定してください。例: ./emu record -- python -m unittest", file=sys.stderr)
+        return 2
+    if docker.up(quiet=True):
+        print("（エミュレーターを起動しました）", file=sys.stderr)
+    proxy.clear_calls()
+    px = proxy.make_server(port=0)
+    threading.Thread(target=px.serve_forever, daemon=True).start()
+    try:
+        try:
+            url = proxy.url_of(px)
+            env = config.child_env(proxy=url)
+            env[config.RECORD_URL_VAR] = url  # 子が ./emu run やテストの補助を使っても、この中継を通るように
+            code = subprocess.run(command, env=env).returncode
+        except FileNotFoundError:
+            print(f"コマンドが見つかりません: {command[0]}", file=sys.stderr)
+            return 127
+    finally:
+        proxy.wait_idle()  # 最後の呼び出しが記録されるのを待つ
+        px.shutdown()
+        px.server_close()
+    rep = report.build(proxy.summary(), docker.version())
+    result = _finish_report(rep, args)
+    if not rep["totals"]["calls"]:
+        print("注意: 呼び出しが1回も記録されませんでした。コマンドが AWS_ENDPOINT_URL を自分で設定していないか確かめてください。",
+              file=sys.stderr)
+    return code if code != 0 else result
+
+
+def cmd_report(args):
+    """動いている画面（./emu ui）の中継が集めた記録から、レポートを作る。"""
+    import urllib.error
+    import urllib.request
+
+    from . import report
+
+    if args.source:
+        rep = report.load(args.source)
+    else:
+        try:
+            with urllib.request.urlopen(f"{config.UI_URL}/api/calls/summary", timeout=5) as res:
+                rep = json.loads(res.read())
+        except (urllib.error.URLError, OSError):
+            print("./emu ui が動いていません。画面なしで使うなら ./emu record -- <コマンド> を使ってください。",
+                  file=sys.stderr)
+            return 1
+    return _finish_report(rep, args)
 
 
 def _port_open(port):
@@ -255,6 +338,14 @@ def main(argv=None):
     p = sub.add_parser("env"); p.add_argument("--log", action="store_true", help="中継を通す（APIログに記録）")
     p.add_argument("--format", choices=["sh", "dotenv", "json"], default="sh"); p.set_defaults(fn=cmd_env)
     p = sub.add_parser("run"); p.add_argument("--log", action="store_true"); p.add_argument("command", nargs=argparse.REMAINDER); p.set_defaults(fn=cmd_run)
+    def report_options(p):
+        p.add_argument("--out", metavar="ファイル", help="レポートの書き出し先。.json なら JSON、それ以外は Markdown")
+        p.add_argument("--compare", metavar="ファイル", help="前に書き出した JSON のレポートと比べる")
+        p.add_argument("--strict", action="store_true", help=f"未実装の操作があれば、終了コード {STRICT_EXIT} で終わる")
+
+    p = sub.add_parser("record"); report_options(p); p.add_argument("command", nargs=argparse.REMAINDER); p.set_defaults(fn=cmd_record)
+    p = sub.add_parser("report"); report_options(p)
+    p.add_argument("--from", dest="source", metavar="ファイル", help="画面の代わりに、書き出した JSON から作る"); p.set_defaults(fn=cmd_report)
     p = sub.add_parser("aws"); p.add_argument("command", nargs=argparse.REMAINDER)
     p.set_defaults(fn=lambda a: cmd_run(argparse.Namespace(log=False, command=["aws", *a.command])))
     sub.add_parser("seed").set_defaults(fn=cmd_seed)

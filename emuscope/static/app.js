@@ -704,14 +704,16 @@ async function renderSqs(mine, force) {
 
 let calls = [];
 let callsLast = 0;
-const callFilter = { text: "", errors: false, missing: false };
+const callFilter = { text: "", errors: false, missing: false, mode: "each" };
 
 async function pollCalls() {
   let d;
   try { d = await api("/api/calls", { after: callsLast }); } catch { return; }
   if (d.lastId < callsLast) { calls = []; callsLast = 0; return pollCalls(); }  // サーバーが再起動して番号が戻った
-  if (!d.calls.length) return;
-  calls.push(...d.calls);
+  // 画面の切り替えと1秒ごとの取得が重なると、同じ after で2回取ってくる。取り込み済みの番号は捨てる
+  const fresh = d.calls.filter((c) => c.id > callsLast);
+  if (!fresh.length) return;
+  calls.push(...fresh);
   calls = calls.slice(-2000);
   callsLast = d.lastId;
   renderCallCount();
@@ -724,14 +726,57 @@ function renderCallCount() {
 }
 
 function setupCalls() {
-  const text = el("input", { type: "text", placeholder: "サービス名や操作名で絞り込み", oninput: (e) => { callFilter.text = e.target.value.toLowerCase(); renderCalls(); } });
+  const text = el("input", { type: "text", placeholder: "サービス名や操作名で絞り込み", oninput: (e) => { callFilter.text = e.target.value.toLowerCase(); C.listJson = null; renderCalls(); } });
   const check = (label, key) => el("label", { class: "check" },
-    el("input", { type: "checkbox", onchange: (e) => { callFilter[key] = e.target.checked; renderCalls(); } }), label);
+    el("input", { type: "checkbox", onchange: (e) => { callFilter[key] = e.target.checked; C.listJson = null; renderCalls(); } }), label);
+  // 「1件ずつ」と「操作ごと」の切り替え。操作ごとは、中継が集計した表（./emu report と同じもの）
+  const modes = el("span", { class: "seg" });
+  const setMode = (mode) => {
+    callFilter.mode = mode;
+    for (const b of modes.children) b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
+    C.close(); C.listJson = null; renderCalls();
+  };
+  for (const [mode, label] of [["each", "1件ずつ"], ["ops", "操作ごと"]]) {
+    const b = button(label, () => setMode(mode));
+    b.dataset.mode = mode;
+    b.setAttribute("aria-pressed", String(mode === callFilter.mode));
+    modes.append(b);
+  }
+  const save = (format, label) => el("a", { class: "btn", href: "/api/calls/report?format=" + format, download: "emulator-report." + format, text: label });
   C.setHead("APIログ", "", [
-    text, check("エラーだけ", "errors"), check("未実装（501）だけ", "missing"), el("span", { class: "spacer" }),
+    modes, text, check("エラーだけ", "errors"), check("未実装（501）だけ", "missing"), el("span", { class: "spacer" }),
+    save("md", "レポートを保存（Markdown）"), save("json", "JSON"),
     button("消去", async () => { await post("/api/calls/clear"); calls = []; C.close(); renderCallCount(); renderCalls(); }),
   ]);
   C.title.className = "";
+}
+
+// 操作ごとの集計。新しい呼び出しが来たときだけ取り直す
+let opsReport = null;
+let opsFetchedAt = -1;
+async function renderOps() {
+  if (opsFetchedAt !== callsLast) {
+    const at = callsLast;
+    try { opsReport = await api("/api/calls/summary"); } catch { return; }
+    opsFetchedAt = at;
+  }
+  if (callFilter.mode !== "ops") return;
+  const label = { unimplemented: "未実装", failed: "失敗だけ", ok: "動いた" };
+  const shown = opsReport.operations.filter((o) =>
+    (!callFilter.errors || o.result !== "ok") && (!callFilter.missing || o.result === "unimplemented") &&
+    (!callFilter.text || `${o.service} ${o.operation} ${Object.keys(o.errors).join(" ")} ${o.clients.join(" ")}`.toLowerCase().includes(callFilter.text)));
+  const json = JSON.stringify(["ops", shown, callFilter]);
+  if (json === C.listJson) return;
+  C.listJson = json;
+  if (!shown.length) return C.message(el("p", { text: "条件に合う操作はありません。" }));
+  const rows = shown.map((o) => row(C, `${o.service}:${o.operation}`, null,
+    el("td", { class: "mono", text: o.service }),
+    el("td", { class: "mono", text: o.operation }),
+    el("td", { class: o.result === "ok" ? "" : "bad", text: label[o.result] }),
+    el("td", { class: "num", text: String(o.calls) }),
+    el("td", { class: "mono", text: Object.entries(o.statuses).map(([k, v]) => `${k}×${v}`).join(", ") + (Object.keys(o.errors).length ? " " + Object.keys(o.errors).join(", ") : "") }),
+    el("td", { class: "dim", text: o.clients.join(", ") })));
+  C.setList(table(["サービス", "操作", "結果", el("th", { class: "num", text: "回数" }), "応答", "呼び出し元"], rows));
 }
 
 function renderCalls() {
@@ -752,6 +797,7 @@ function renderCalls() {
       pre("./emu run --log -- python my_script.py\n./emu run --log -- aws s3 ls"),
       el("p", null, "シェルごと切り替える方法などは「つなぎ方」にあります。中継の宛先は ", el("code", { text: S.proxy.endpoint }), " です。"));
   }
+  if (callFilter.mode === "ops") return renderOps();
   const shown = calls.filter((c) =>
     (!callFilter.errors || c.status >= 400) && (!callFilter.missing || c.status === 501) &&
     (!callFilter.text || `${c.service} ${c.operation} ${c.error} ${c.client}`.toLowerCase().includes(callFilter.text)));

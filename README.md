@@ -8,6 +8,7 @@ AWS Emulator には画面がなく、止めると中身が全部消える。未�
 - アプリが投げた呼び出しを一覧にして、未実装（501）の操作を見つけられる
 - 中身をフォルダに保存して、いつでも戻せる
 - 環境変数を覚えなくても、コマンド1つでエミュレーターに向けられる
+- テストを回すだけで、そのアプリが使うAPIのうち未実装のものを表にできる（CIでも使える）
 
 AWS公式のツールではない。個人の実験で、対応は約束しない。
 
@@ -36,7 +37,7 @@ AWS公式のツールではない。個人の実験で、対応は約束しな�
 | 画面 | できること |
 | --- | --- |
 | リソース | 21種類のリソースを一覧する。S3・DynamoDB・SQS は中身の閲覧と書き込み、それ以外は一覧と詳細 |
-| APIログ | アプリが投げた呼び出しを1件ずつ表示する。未実装の操作は赤で出る |
+| APIログ | アプリが投げた呼び出しを1件ずつ、または操作ごとにまとめて表示する。未実装の操作は赤で出る。対応状況レポートとして保存できる |
 | エミュレーターのログ | エミュレーター自身の警告や監査ログを読む |
 | スナップショット | 今の中身を保存する。保存した状態に戻す |
 | つなぎ方 | 自分のプログラムからつなぐためのコマンドや環境変数を、コピーできる形で出す |
@@ -72,9 +73,39 @@ SQS の中身だけは自動更新しない。SQS には「のぞくだけ」の
 
 1件ごとに、サービス名、操作名、結果、かかった時間、呼び出し元（SDKの種類）が出る。行を押すと、要求と応答のヘッダーと本文を読める。
 
-使いどころは、アプリを一通り動かしてから「未実装（501）だけ」に絞ること。そのアプリが使っているAPIのうち、エミュレーターで動かないものが一覧になる。
+使いどころは、アプリを一通り動かしてから「未実装（501）だけ」に絞ること。そのアプリが使っているAPIのうち、エミュレーターで動かないものが一覧になる。「操作ごと」に切り替えると、同じ操作をまとめた表になる。「レポートを保存」で、その表を Markdown か JSON で保存できる。
 
-中継は HTTP（`http://127.0.0.1:9299`）なので、証明書の設定が要らない。署名の値そのものは記録しない。
+中継は HTTP（`http://127.0.0.1:9299`）なので、証明書の設定が要らない。署名の値そのものは記録しない。本文はメモリに溜めずに流し、画面で読めるのは先頭 64KB まで。
+
+### 対応状況レポート
+
+画面を開かずに、同じことをコマンド1つで行う。テストを一通り回して、使った操作のうち未実装のものを表にする。
+
+```bash
+./emu record -- python -m unittest          # 実行して、終わったら表を出す
+./emu record --out compat.md -- npm test    # ファイルに書く（拡張子が .json なら JSON）
+./emu record --strict -- pytest             # 未実装が1つでもあれば終了コード 3
+./emu report                                # 動いている画面（./emu ui）のAPIログから作る
+./emu report --compare old.json             # 前に書き出した JSON と比べる
+```
+
+`./emu record` は自分で中継を立てるので、`./emu ui` は要らない。表は標準エラーに出す（テストの出力と混ざらないように）。終了コードは、コマンドが失敗すればその値、`--strict` で未実装があれば 3、それ以外は 0。
+
+結果は操作ごとに3つに分ける。
+
+| 結果 | 条件 |
+| --- | --- |
+| 未実装 | 501 が1回でもあった |
+| 失敗だけ | 成功（400未満）が1回もなかった |
+| 動いた | それ以外。4xx が混じっていてもよい（条件付き書き込みの失敗のように、テストがわざと起こすエラーが多いため） |
+
+エミュレーターを新しくしたときは、前の JSON と比べると「実装された」「動かなくなった」操作がわかる。
+
+```bash
+./emu record --out before.json -- python -m unittest
+# （ここでエミュレーターを新しくする）
+./emu record --compare before.json -- python -m unittest
+```
 
 ### スナップショット
 
@@ -100,6 +131,8 @@ SQS の中身だけは自動更新しない。SQS には「のぞくだけ」の
 | `./emu ui` | 画面と中継だけを起動する。`--read-only` で書き込みと再起動を禁止できる |
 | `./emu run -- <コマンド>` | エミュレーターに向けてコマンドを実行する。止まっていれば起動する |
 | `./emu run --log -- <コマンド>` | 同じ。呼び出しをAPIログに記録する |
+| `./emu record -- <コマンド>` | 実行して、使ったAPIの対応状況を表にする。`--out` `--strict` `--compare` |
+| `./emu report` | 画面のAPIログから、同じ表を作る |
 | `./emu aws <...>` | `./emu run -- aws <...>` の短縮形 |
 | `./emu env` | 環境変数を表示する。`eval "$(./emu env)"` で今のシェルを切り替える |
 | `./emu seed` | サンプルデータを入れる |
@@ -109,6 +142,13 @@ SQS の中身だけは自動更新しない。SQS には「のぞくだけ」の
 `./emu` はどのフォルダからでも呼べる。`make dev` `make up` `make test` など、同じことをする Makefile もある。
 
 ポートは環境変数で変えられる: `EMU_PORT`（既定 9297）、`EMU_UI_PORT`（9298）、`EMU_PROXY_PORT`（9299）。
+
+場所も環境変数で変えられる。
+
+| 環境変数 | 中身 | クローンして使うとき | pip で入れたとき |
+| --- | --- | --- | --- |
+| `EMU_HOME` | エミュレーターの鍵と証明書 | このフォルダの `.emu-home/` | `~/.emuscope/home` |
+| `EMU_SNAPSHOTS` | スナップショット | このフォルダの `snapshots/` | 今いるフォルダの `snapshots/` |
 
 ## テストで使う
 
@@ -131,11 +171,65 @@ class OrderTest(EmulatorTestCase):
 ./emu run -- python -m unittest
 ```
 
+`record = True` を付けると、そのプロセスの中で呼び出しを集計する。`emuscope.testing.unimplemented_calls()` で、未実装だった操作を読める。
+
+### pytest
+
+フィクスチャとオプションがある。pip で入れた場合は自動で読み込まれる。クローンして使う場合は、`conftest.py` に1行書く。
+
+```python
+# conftest.py（クローンして使う場合だけ）
+pytest_plugins = ["emuscope.pytest_plugin"]
+```
+
+```python
+import pytest
+
+
+def test_bucket(emu_client):
+    emu_client("s3").create_bucket(Bucket="demo")
+
+
+@pytest.mark.emu_snapshot("base")     # このテストの前に、保存した状態に戻す
+def test_from_saved_state(emu_client):
+    ...
+
+
+def test_from_empty(emu_reset, emu_client):   # 空の状態から始める
+    ...
+```
+
+```bash
+./emu run -- pytest --emu-strict --emu-report compat.md
+```
+
+| 名前 | すること |
+| --- | --- |
+| `emulator` | セッションの最初に一度、SDK をエミュレーターに向ける |
+| `emu_client` | `boto3.client` を作る関数 |
+| `emu_reset` | エミュレーターを再起動して、空の状態から始める |
+| `--emu-report PATH` | 終わったら対応状況レポートを書く |
+| `--emu-strict` | 未実装の操作を呼んでいたら、テストが全部通っても失敗にする（終了コード 3） |
+
 動くサンプルが `examples/` にある。`orders.py` は DynamoDB・S3・SQS を使う小さな注文アプリで、コードにはエンドポイントも鍵も書いていない。`test_orders.py` がそのテスト。
 
 ```bash
 make example
 ```
+
+## 自分のプロジェクトに入れる
+
+emuscope をクローンせず、自分のプロジェクトの venv に入れて使うこともできる。PyPI には出していない。
+
+```bash
+pip install git+https://github.com/akicraft/emuscope
+emu up
+emu record --strict -- pytest
+```
+
+このときは `./emu` の代わりに `emu` を使う。スナップショットはそのプロジェクトの `snapshots/` に入るので、プロジェクトの Git で管理できる。鍵と証明書は `~/.emuscope/home` に置く（エミュレーターはポートごとに1つなので、どのフォルダから呼んでも同じものを見る）。
+
+別の場所の設定で起動したエミュレーターが残っていると、`emu up` がその旨を出して止まる。`emu down` してから起動し直す。
 
 ## 安全のために入れてあるもの
 
@@ -155,9 +249,10 @@ make example
 
 ## 確かめていないこと
 
-- JavaScript、Go、Java など、Boto3 と AWS CLI 以外のSDKからの接続
+- JavaScript、Go、Java など、Boto3 と AWS CLI 以外のSDKからの接続（`./emu env` は Node 向けの `NODE_EXTRA_CA_CERTS` も出すが、試していない）
 - Terraform や CDK からの利用
-- 中継を通した、数百MBを超える大きなファイルの送受信（中継は本文をいったんメモリに載せる）
+- 中継を通す数百MBのファイルの送受信。AWS Emulator 1.0.385 は、1回の要求が約16MB、1つのバケットが合計64MBまでで、それより大きいものは置けない。実物のエミュレーターを相手に、60MB の上り（8MB ずつのマルチパート）と下りを中継経由で3往復して、`./emu ui` のメモリが増えないこと（80MB→85MB）は確かめた
+- Intel の Mac と Linux での動作（x86_64 の RPM を選ぶ処理と、Linux でホストと同じユーザーで動かす処理は入れてあるが、試していない）
 - 中継を通した、ストリーミング系のAPI（Kinesis の SubscribeToShard など）
 - macOS 以外での動作
 - 画面のファイル選択ダイアログと、実際のマウスでのドラッグ（アップロードの処理そのものは確認済み）
@@ -190,17 +285,20 @@ make example
 | `emuscope/aws.py` | エミュレーターへの接続と、相手の確認 |
 | `emuscope/catalog.py` | 21種類のリソースの「一覧」と「詳細」 |
 | `emuscope/resources.py` | S3・DynamoDB・SQS の読み書き |
-| `emuscope/proxy.py` | APIログ用の中継 |
+| `emuscope/proxy.py` | APIログ用の中継と、操作ごとの集計 |
+| `emuscope/report.py` | 対応状況レポート |
 | `emuscope/snapshot.py` | 保存と復元 |
 | `emuscope/server.py` | 画面と、画面が呼ぶAPI |
 | `emuscope/static/` | 画面の HTML・CSS・JavaScript |
 | `emuscope/testing.py` | テスト用の補助 |
+| `emuscope/pytest_plugin.py` | pytest のフィクスチャとオプション |
+| `emuscope/image/Dockerfile` | AWSのドキュメントにあるものを、CPU に合わせて RPM を選べるようにしたもの |
 | `emuscope/seed.py` | サンプルデータ |
-| `tests/` | emuscope 自体のテスト（`make test`。エミュレーターの中身は消える） |
+| `tests/` | emuscope 自体のテスト（`make test`。エミュレーターの中身は消える）。`make test-offline` はエミュレーターなしで走る分だけ |
 | `examples/` | サンプルのアプリとそのテスト |
-| `Dockerfile` | AWSのドキュメントにあるものを、Apple Silicon 向けに1行変えたもの |
+| `pyproject.toml` | `pip install` 用の設定 |
 
-依存は Boto3 だけ。画面は外部のライブラリを使っていない。
+依存は Boto3 だけ（pytest のプラグインは、pytest があるときだけ使う）。画面は外部のライブラリを使っていない。
 
 対応するリソースの種類を足すときは、`emuscope/catalog.py` に「一覧を返す関数」と「詳細を返す関数」を書いて、`KINDS` に1行足す。
 
@@ -208,7 +306,7 @@ make example
 
 MIT。[LICENSE](LICENSE) を参照。
 
-`Dockerfile` は、AWS のユーザーガイドに載っているものを1行変えたもの（AWS のサイト規約では、ドキュメント内のコードは MIT-0）。AWS Emulator 本体はこのリポジトリに含まれず、ビルド時に AWS から取得される。
+`emuscope/image/Dockerfile` は、AWS のユーザーガイドに載っているものを2行変えたもの（AWS のサイト規約では、ドキュメント内のコードは MIT-0）。AWS Emulator 本体はこのリポジトリに含まれず、ビルド時に AWS から取得される。
 
 ## 参考
 
