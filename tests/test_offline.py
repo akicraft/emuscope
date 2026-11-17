@@ -446,5 +446,153 @@ class DockerCommandTest(unittest.TestCase):
             docker.check_mount()  # 例外にならない
 
 
+# ---- 中継のストリーミング --------------------------------------------------------
+
+import hashlib  # noqa: E402
+import http.client  # noqa: E402
+
+PATTERN = bytes(range(256)) * 256  # 64KB
+
+
+def pattern_chunks(size):
+    while size > 0:
+        piece = PATTERN[:min(len(PATTERN), size)]
+        yield piece
+        size -= len(piece)
+
+
+class StreamUpstream(BaseHTTPRequestHandler):
+    """大きな本文を、メモリに溜めずに受け取り・返す偽の上流。"""
+
+    protocol_version = "HTTP/1.1"
+    received = {}
+
+    def do_PUT(self):
+        length, digest = int(self.headers["Content-Length"]), hashlib.sha256()
+        while length:
+            chunk = self.rfile.read(min(65536, length))
+            digest.update(chunk)
+            length -= len(chunk)
+        StreamUpstream.received[self.path] = digest.hexdigest()
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self):
+        size = int(self.path.rsplit("/", 1)[-1])
+        self.send_response(200)
+        if self.path.startswith("/chunked/"):
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            for piece in pattern_chunks(size):
+                self.wfile.write(b"%x\r\n%s\r\n" % (len(piece), piece))
+            self.wfile.write(b"0\r\n\r\n")
+        elif self.path.startswith("/cut/"):
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            self.wfile.write(PATTERN)  # 予告より短いところで切る
+            self.close_connection = True
+        else:
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            for piece in pattern_chunks(size):
+                self.wfile.write(piece)
+
+    def log_message(self, *args):
+        pass
+
+
+def expected_digest(size):
+    digest = hashlib.sha256()
+    for piece in pattern_chunks(size):
+        digest.update(piece)
+    return digest.hexdigest()
+
+
+class ProxyStreamingTest(unittest.TestCase):
+    SIZE = 50 * 1024 * 1024
+
+    def setUp(self):
+        proxy.clear_calls()
+        self.upstream = start(ThreadingHTTPServer(("127.0.0.1", 0), StreamUpstream))
+        px = start(proxy.make_server(port=0, upstream=("127.0.0.1", self.upstream.server_address[1], None)))
+        self.addCleanup(stop, px)
+        self.port = px.server_address[1]
+
+    def tearDown(self):
+        stop(self.upstream)
+        proxy.clear_calls()
+
+    def conn(self):
+        return http.client.HTTPConnection("127.0.0.1", self.port, timeout=60)
+
+    def put(self, path, size):
+        c = self.conn()
+        c.request("PUT", path, body=pattern_chunks(size), headers={"Content-Length": str(size)})
+        res = c.getresponse()
+        res.read()
+        c.close()
+        return res.status
+
+    def get(self, path):
+        c = self.conn()
+        c.request("GET", path)
+        res = c.getresponse()
+        digest, total = hashlib.sha256(), 0
+        try:
+            while chunk := res.read(65536):
+                digest.update(chunk)
+                total += len(chunk)
+        finally:
+            c.close()
+        return res, digest.hexdigest(), total
+
+    def test_large_bodies_stream_without_buffering(self):
+        import tracemalloc
+
+        tracemalloc.start()
+        try:
+            tracemalloc.reset_peak()
+            base = tracemalloc.get_traced_memory()[0]
+            self.assertEqual(self.put("/big", self.SIZE), 200)
+            res, digest, total = self.get(f"/big/{self.SIZE}")
+            proxy.wait_idle()
+            peak = tracemalloc.get_traced_memory()[1] - base
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(StreamUpstream.received["/big"], expected_digest(self.SIZE))
+        self.assertEqual((res.status, total, digest), (200, self.SIZE, expected_digest(self.SIZE)))
+        self.assertLess(peak, 10 * 1024 * 1024, f"中継のメモリが {peak / 1024 / 1024:.1f} MB 増えた")
+
+        calls = proxy.calls_after()["calls"]
+        self.assertEqual([(c["method"], c["reqBytes"], c["resBytes"]) for c in calls],
+                         [("PUT", self.SIZE, 0), ("GET", 0, self.SIZE)])
+        detail = proxy.call_detail(calls[1]["id"])
+        self.assertEqual(len(proxy._calls[-1]["resBody"]), proxy.SNIPPET)  # 覚えているのは先頭だけ
+        self.assertEqual(detail["resBody"]["kind"], "binary")
+
+    def test_response_without_length_is_relayed_chunked(self):
+        res, digest, total = self.get("/chunked/300000")
+        self.assertEqual((res.status, total, digest), (200, 300000, expected_digest(300000)))
+        self.assertEqual(res.getheader("Transfer-Encoding"), "chunked")
+
+    def test_upstream_cut_is_reported_and_proxy_survives(self):
+        try:
+            _, _, total = self.get("/cut/1000000")
+        except http.client.IncompleteRead:
+            total = None
+        self.assertNotEqual(total, 1000000)  # クライアントには、足りないまま切れたことが伝わる
+        proxy.wait_idle()
+        self.assertEqual(proxy.calls_after()["calls"][-1]["error"], "ConnectionBroken")
+        res, _, total = self.get("/big/1000")  # 中継はまだ動いている
+        self.assertEqual((res.status, total), (200, 1000))
+
+    def test_upstream_down_gives_502(self):
+        stop(self.upstream)
+        self.upstream = start(ThreadingHTTPServer(("127.0.0.1", 0), StreamUpstream))  # tearDown 用
+        res, _, _ = self.get("/big/10")
+        self.assertEqual(res.status, 502)
+
+
 if __name__ == "__main__":
     unittest.main()
