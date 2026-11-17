@@ -251,9 +251,8 @@ emu record --strict -- pytest
 
 - JavaScript、Go、Java など、Boto3 と AWS CLI 以外のSDKからの接続（`./emu env` は Node 向けの `NODE_EXTRA_CA_CERTS` も出すが、試していない）
 - Terraform や CDK からの利用
-- 実物のエミュレーターを相手にした、中継を通す数百MBのファイルの送受信（中継は本文を流すようになり、偽の相手での 50MB の往復では、メモリが増えないことを確かめた）
+- 中継を通す数百MBのファイルの送受信。AWS Emulator 1.0.385 は、1回の要求が約16MB、1つのバケットが合計64MBまでで、それより大きいものは置けない。実物のエミュレーターを相手に、60MB の上り（8MB ずつのマルチパート）と下りを中継経由で3往復して、`./emu ui` のメモリが増えないこと（80MB→85MB）は確かめた
 - Intel の Mac と Linux での動作（x86_64 の RPM を選ぶ処理と、Linux でホストと同じユーザーで動かす処理は入れてあるが、試していない）
-- `pip install` で入れた emuscope から、エミュレーターを起動すること
 - 中継を通した、ストリーミング系のAPI（Kinesis の SubscribeToShard など）
 - macOS 以外での動作
 - 画面のファイル選択ダイアログと、実際のマウスでのドラッグ（アップロードの処理そのものは確認済み）
