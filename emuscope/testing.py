@@ -68,6 +68,8 @@ def use_emulator(proxy: bool | str = False) -> None:
     docker.up(quiet=True)
     for name in config.UNSET_VARS:
         os.environ.pop(name, None)
+    if proxy == "record" and os.environ.get(config.RECORD_URL_VAR):
+        proxy = False  # ./emu record の中では、外側の中継が集計する（中継を2段にはできない）
     os.environ.update(config.env_vars(start_recording() if proxy == "record" else bool(proxy)))
     boto3.DEFAULT_SESSION = None  # 以前の設定で作られた既定のセッションを捨てる
     _guarded_client("sts")  # 相手がエミュレーターであることを確かめる（違えば例外）

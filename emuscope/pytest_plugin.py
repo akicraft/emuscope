@@ -17,9 +17,12 @@ pip で入れた場合は自動で読み込まれる。クローンして使う�
     --emu-strict        未実装（501）の操作を呼んでいたら、最後に失敗にする（終了コード 3）
 """
 
+import os
+
 import boto3
 import pytest
 
+from . import config as emu_config
 from . import report as _report
 from . import testing
 
@@ -82,6 +85,9 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 def pytest_terminal_summary(terminalreporter, config):
+    if _wants_record(config) and os.environ.get(emu_config.RECORD_URL_VAR):
+        terminalreporter.write_line("emuscope: emu record の中なので、--emu-report と --emu-strict は使わず、"
+                                    "集計は emu record に任せました")
     state = config.stash.get(_KEY, {})
     if state.get("path"):
         terminalreporter.write_line(f"emuscope: 対応状況レポートを書きました: {state['path']}")

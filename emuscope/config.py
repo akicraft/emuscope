@@ -45,6 +45,9 @@ ACCOUNT = "000000000000"  # エミュレーターのアカウントは常にこ�
 REGION = "us-east-1"
 
 # 本物のAWSに向く可能性のある変数。エミュレーター用の環境を作るときは必ず外す。
+# ./emu record が子に渡す、自分の中継の URL
+RECORD_URL_VAR = "EMU_RECORD_URL"
+
 UNSET_VARS = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"]
 
 
@@ -53,8 +56,16 @@ def env_vars(proxy: bool | str = False) -> dict:
 
     proxy=True のときは中継サーバー経由にする。呼び出しが画面の「APIログ」に記録される。
     proxy に URL の文字列を渡すと、その中継を通す（./emu record が自分で立てた中継など）。
+    ./emu record の中（EMU_RECORD_URL がある）では、proxy が True でも False でも、その中継を通す。
     """
-    endpoint = proxy if isinstance(proxy, str) else (PROXY_ENDPOINT if proxy else ENDPOINT)
+    if isinstance(proxy, str):
+        endpoint = proxy
+    elif os.environ.get(RECORD_URL_VAR):
+        # ./emu record の中で動いているときは、その中継を通す。
+        # 入れ子の ./emu run やテストの補助が直結に向け直すと、呼び出しが記録から漏れる
+        endpoint = os.environ[RECORD_URL_VAR]
+    else:
+        endpoint = PROXY_ENDPOINT if proxy else ENDPOINT
     return {
         "AWS_ENDPOINT_URL": endpoint,
         "AWS_SHARED_CREDENTIALS_FILE": str(CREDENTIALS),

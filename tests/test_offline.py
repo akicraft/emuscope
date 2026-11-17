@@ -256,6 +256,29 @@ class RecordCommandTest(UpstreamTestCase):
             self.assertIn("新しく使われた: kms:Encrypt", text)
             self.assertIn("使われなくなった: athena:MissingThing", text)
 
+    def test_nested_redirect_to_emulator_still_goes_through_record(self):
+        # make example の中の ./emu run や EmulatorTestCase は、config.env_vars() で接続先を決め直す。
+        # それでも ./emu record の中継を通ることを確かめる（以前は直結に向き、0 回と表示された）
+        redirect = "import os; from emuscope import config; os.environ.update(config.env_vars({flag}))\n"
+        for flag in (False, True):
+            proxy.clear_calls()
+            real = proxy.make_server
+            child = [sys.executable, "-c", redirect.format(flag=flag) + CHILD.format(ops=[("s3", "ListBuckets")], exit=0)]
+            err = io.StringIO()
+            with mock.patch("emuscope.docker.up", return_value=False), \
+                    mock.patch("emuscope.docker.version", return_value="1.0.385"), \
+                    mock.patch.object(proxy, "make_server", lambda port=None: real(port=port, upstream=self.target)), \
+                    mock.patch.dict("os.environ", {"PYTHONPATH": str(Path(__file__).resolve().parent.parent)}), \
+                    redirect_stderr(err):
+                code = cli.main(["record", "--", *child])
+            self.assertEqual(code, 0, err.getvalue())
+            self.assertIn("| s3 | ListBuckets |", err.getvalue())
+
+    def test_zero_calls_gives_a_hint(self):
+        code, out = self.run_record([])
+        self.assertEqual(code, 0)
+        self.assertIn("呼び出しが1回も記録されませんでした", out)
+
     def test_report_without_ui_explains_what_to_do(self):
         err = io.StringIO()
         with mock.patch("emuscope.config.UI_URL", "http://127.0.0.1:9"), redirect_stderr(err):

@@ -134,7 +134,8 @@ def cmd_run(args):
         return 2
     if docker.up(quiet=True):
         print("（エミュレーターを起動しました）", file=sys.stderr)
-    if args.log and not _port_open(config.PROXY_PORT):
+    # ./emu record の中なら、記録はその中継が引き受ける（画面の中継は要らない）
+    if args.log and not os.environ.get(config.RECORD_URL_VAR) and not _port_open(config.PROXY_PORT):
         print("APIログ用の中継が動いていません。別のターミナルで ./emu ui を起動してください。", file=sys.stderr)
         return 1
     try:
@@ -182,7 +183,10 @@ def cmd_record(args):
     threading.Thread(target=px.serve_forever, daemon=True).start()
     try:
         try:
-            code = subprocess.run(command, env=config.child_env(proxy=proxy.url_of(px))).returncode
+            url = proxy.url_of(px)
+            env = config.child_env(proxy=url)
+            env[config.RECORD_URL_VAR] = url  # 子が ./emu run やテストの補助を使っても、この中継を通るように
+            code = subprocess.run(command, env=env).returncode
         except FileNotFoundError:
             print(f"コマンドが見つかりません: {command[0]}", file=sys.stderr)
             return 127
@@ -192,6 +196,9 @@ def cmd_record(args):
         px.server_close()
     rep = report.build(proxy.summary(), docker.version())
     result = _finish_report(rep, args)
+    if not rep["totals"]["calls"]:
+        print("注意: 呼び出しが1回も記録されませんでした。コマンドが AWS_ENDPOINT_URL を自分で設定していないか確かめてください。",
+              file=sys.stderr)
     return code if code != 0 else result
 
 
