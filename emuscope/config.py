@@ -4,6 +4,18 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+PACKAGE = Path(__file__).resolve().parent
+IMAGE_DIR = PACKAGE / "image"  # Dockerfile の置き場所
+
+# リポジトリをクローンして ./emu で使っているか、pip で入れて使っているか
+CLONED = (ROOT / "emu").is_file()
+EMU_CMD = "./emu" if CLONED else "emu"
+
+
+def _path_from_env(name, default):
+    """環境変数で場所を変えられるようにする。コンテナとホストでパスを一致させるため、絶対パスに直す。"""
+    value = os.environ.get(name)
+    return Path(value).expanduser().resolve() if value else default
 
 PORT = int(os.environ.get("EMU_PORT", "9297"))  # エミュレーター本体（HTTPS）
 UI_PORT = int(os.environ.get("EMU_UI_PORT", "9298"))  # 画面
@@ -12,8 +24,10 @@ PROXY_PORT = int(os.environ.get("EMU_PROXY_PORT", "9299"))  # APIログ用の中
 IMAGE = "aws-emulator"
 CONTAINER = f"aws-emulator-{PORT}"
 
-# 本物の ~/.aws には触れない。プロジェクト内の .emu-home を「仮のHOME」としてコンテナに渡す。
-EMU_HOME = ROOT / ".emu-home"
+# 本物の ~/.aws には触れない。専用の場所を「仮のHOME」としてコンテナに渡す。
+# クローンして使うときは .emu-home、pip で入れたときは ~/.emuscope/home。
+# プロジェクトごとにしないのは、コンテナが1ポートに1つだから（どのフォルダから呼んでも同じ鍵を見る必要がある）。
+EMU_HOME = _path_from_env("EMU_HOME", ROOT / ".emu-home" if CLONED else Path.home() / ".emuscope" / "home")
 EMU_ROOT = EMU_HOME / ".aws" / "emulator"
 EMU_DIR = EMU_ROOT / str(PORT)
 CREDENTIALS = EMU_DIR / "emulator_credentials"
@@ -24,7 +38,8 @@ ENDPOINT = f"https://127.0.0.1:{PORT}"
 PROXY_ENDPOINT = f"http://127.0.0.1:{PROXY_PORT}"
 UI_URL = f"http://127.0.0.1:{UI_PORT}"
 
-SNAPSHOTS = ROOT / "snapshots"
+# スナップショットの置き場所。pip で入れたときは、今いるフォルダ（自分のプロジェクト）の snapshots/
+SNAPSHOTS = _path_from_env("EMU_SNAPSHOTS", ROOT / "snapshots" if CLONED else Path.cwd() / "snapshots")
 
 ACCOUNT = "000000000000"  # エミュレーターのアカウントは常にこれ
 REGION = "us-east-1"

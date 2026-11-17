@@ -53,7 +53,7 @@ def connect_info(proxy_enabled):
     def exports(env):
         return "\n".join(f"export {k}={v}" for k, v in env.items()) + "\nunset " + " ".join(config.UNSET_VARS)
 
-    emu = "./emu"
+    emu = config.EMU_CMD
     sections = [
         {"title": "いちばん簡単: コマンドの前に付ける",
          "body": "環境変数を自分で設定しなくても、エミュレーターに向けてコマンドを実行できます。止まっていれば自動で起動します。",

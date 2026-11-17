@@ -362,5 +362,89 @@ class PytestPluginTest(unittest.TestCase):
         self.assertIn("athena:MissingThing", out)
 
 
+# ---- 置き場所と docker のコマンド -------------------------------------------------
+
+class ConfigLocationTest(unittest.TestCase):
+    def load(self, env, cloned):
+        import importlib
+        import os
+
+        from emuscope import config
+
+        clean = {k: v for k, v in os.environ.items() if k not in ("EMU_HOME", "EMU_SNAPSHOTS")}
+        try:
+            with mock.patch.dict(os.environ, {**clean, **env}, clear=True), \
+                    mock.patch("pathlib.Path.is_file", return_value=cloned):
+                importlib.reload(config)
+                return config.EMU_HOME, config.SNAPSHOTS, config.EMU_CMD
+        finally:
+            importlib.reload(config)  # ほかのテストのために元に戻す
+
+    def test_cloned_defaults(self):
+        home, snaps, cmd = self.load({}, cloned=True)
+        self.assertEqual(home, ROOT / ".emu-home")
+        self.assertEqual(snaps, ROOT / "snapshots")
+        self.assertEqual(cmd, "./emu")
+
+    def test_installed_defaults(self):
+        home, snaps, cmd = self.load({}, cloned=False)
+        self.assertEqual(home, Path.home() / ".emuscope" / "home")
+        self.assertEqual(snaps, Path.cwd() / "snapshots")
+        self.assertEqual(cmd, "emu")
+
+    def test_environment_wins_and_is_made_absolute(self):
+        with tempfile.TemporaryDirectory() as d:
+            home, snaps, _ = self.load({"EMU_HOME": d + "/h/../h2", "EMU_SNAPSHOTS": "rel/snaps"}, cloned=True)
+            self.assertEqual(home, Path(d).resolve() / "h2")
+            self.assertEqual(snaps, (Path.cwd() / "rel" / "snaps").resolve())
+
+    def test_home_is_never_under_dot_aws(self):
+        home, _, _ = self.load({}, cloned=False)
+        self.assertNotIn(".aws", home.parts)
+
+
+class DockerCommandTest(unittest.TestCase):
+    def test_rpm_arch(self):
+        from emuscope import docker
+
+        self.assertEqual(docker.rpm_arch("arm64"), "aarch64")
+        self.assertEqual(docker.rpm_arch("aarch64"), "aarch64")
+        self.assertEqual(docker.rpm_arch("x86_64"), "x86_64")
+        self.assertEqual(docker.rpm_arch("AMD64"), "x86_64")
+        with self.assertRaises(docker.DockerError):
+            docker.rpm_arch("riscv64")
+
+    def test_build_uses_the_packaged_dockerfile(self):
+        from emuscope import config, docker
+
+        with mock.patch("platform.machine", return_value="x86_64"):
+            cmd = docker.build_command()
+        self.assertIn("RPM_ARCH=x86_64", cmd)
+        self.assertEqual(cmd[-1], str(config.IMAGE_DIR))
+        self.assertTrue((config.IMAGE_DIR / "Dockerfile").is_file())
+
+    def test_user_flag_only_on_linux(self):
+        from emuscope import docker
+
+        with mock.patch.object(sys, "platform", "linux"):
+            self.assertIn("--user", docker.run_command())
+        with mock.patch.object(sys, "platform", "darwin"):
+            cmd = docker.run_command()
+            self.assertNotIn("--user", cmd)
+        self.assertIn("127.0.0.1:9297:9297", " ".join(cmd))  # LAN には出さない
+
+    def test_mount_mismatch_is_reported(self):
+        from emuscope import config, docker
+
+        done = mock.Mock(returncode=0, stdout="/somewhere/else/.aws/emulator\n")
+        with mock.patch.object(docker, "_docker", return_value=done):
+            with self.assertRaises(docker.DockerError) as raised:
+                docker.check_mount()
+        self.assertIn("/somewhere/else", str(raised.exception))
+        same = mock.Mock(returncode=0, stdout=f"{config.EMU_ROOT}\n")
+        with mock.patch.object(docker, "_docker", return_value=same):
+            docker.check_mount()  # 例外にならない
+
+
 if __name__ == "__main__":
     unittest.main()

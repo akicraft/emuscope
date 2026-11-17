@@ -1,8 +1,11 @@
 """エミュレーターのコンテナを起動・停止する。docker コマンドを呼ぶだけ。"""
 
 import json
+import os
+import platform
 import ssl
 import subprocess
+import sys
 import time
 import urllib.request
 
@@ -33,9 +36,24 @@ def image_exists() -> bool:
     return _docker("image", "inspect", config.IMAGE).returncode == 0
 
 
+# platform.machine() の値 → AWS が配っている RPM の名前
+RPM_ARCH = {"arm64": "aarch64", "aarch64": "aarch64", "x86_64": "x86_64", "amd64": "x86_64"}
+
+
+def rpm_arch(machine: str | None = None) -> str:
+    machine = (machine or platform.machine()).lower()
+    if machine not in RPM_ARCH:
+        raise DockerError(f"この CPU（{machine}）向けの AWS Emulator はありません。")
+    return RPM_ARCH[machine]
+
+
+def build_command() -> list[str]:
+    return ["docker", "build", "-t", config.IMAGE, "--build-arg", f"RPM_ARCH={rpm_arch()}", str(config.IMAGE_DIR)]
+
+
 def build() -> None:
     """Dockerfile からイメージを作る。進み具合はそのまま画面に流す。"""
-    if subprocess.run(["docker", "build", "-t", config.IMAGE, str(config.ROOT)]).returncode != 0:
+    if subprocess.run(build_command()).returncode != 0:
         raise DockerError("イメージのビルドに失敗しました。")
 
 
@@ -54,10 +72,45 @@ def healthy() -> bool:
         return False
 
 
+def mounted_dirs() -> list[str]:
+    """動いているコンテナが、ホストのどのフォルダをマウントしているか。"""
+    r = _docker("inspect", "-f", "{{range .Mounts}}{{.Source}}\n{{end}}", config.CONTAINER)
+    return [line.strip() for line in r.stdout.splitlines() if line.strip()] if r.returncode == 0 else []
+
+
+def check_mount() -> None:
+    """コンテナが別の EMU_HOME で起動されていると、鍵が見つからずに待ち続けるので、先に見つけて止める。"""
+    mounts = mounted_dirs()
+    if mounts and str(config.EMU_ROOT) not in mounts:
+        raise DockerError(f"エミュレーターは別の場所（{mounts[0]}）の設定で起動されています。"
+                          f"{config.EMU_CMD} down してからやり直してください。")
+
+
+def run_command() -> list[str]:
+    """コンテナを起動する docker コマンド。"""
+    user = []
+    if sys.platform == "linux":
+        # Linux では、マウントしたフォルダに鍵を書けるよう、ホストと同じユーザーで動かす（macOS では不要）
+        user = ["--user", f"{os.getuid()}:{os.getgid()}"]
+    return [
+        "run", "-d", "--rm", "--name", config.CONTAINER,
+        "--memory=2g", "--memory-swap=2g",
+        # 127.0.0.1 を付けないと、同じLANの他の機器からも届いてしまう
+        "-p", f"127.0.0.1:{config.PORT}:{config.PORT}",
+        *user,
+        "-e", "EMULATOR_TELEMETRY=off",
+        # config に書かれる ca.pem の絶対パスが、ホストとコンテナで一致するようにする
+        "-e", f"HOME={config.EMU_HOME}",
+        "-v", f"{config.EMU_ROOT}:{config.EMU_ROOT}",
+        config.IMAGE, "-p", str(config.PORT), "--telemetry", "off",
+    ]
+
+
 def up(quiet: bool = False) -> bool:
     """起動する。すでに動いていれば何もしない。新しく起動したら True。"""
     say = (lambda *a: None) if quiet else print
     if is_running():
+        check_mount()
         _wait_healthy()
         return False
     if not image_exists():
@@ -68,17 +121,7 @@ def up(quiet: bool = False) -> bool:
     if config.EMU_DIR.exists():
         for f in config.EMU_DIR.iterdir():
             f.unlink()
-    r = _docker(
-        "run", "-d", "--rm", "--name", config.CONTAINER,
-        "--memory=2g", "--memory-swap=2g",
-        # 127.0.0.1 を付けないと、同じLANの他の機器からも届いてしまう
-        "-p", f"127.0.0.1:{config.PORT}:{config.PORT}",
-        "-e", "EMULATOR_TELEMETRY=off",
-        # config に書かれる ca.pem の絶対パスが、ホストとコンテナで一致するようにする
-        "-e", f"HOME={config.EMU_HOME}",
-        "-v", f"{config.EMU_ROOT}:{config.EMU_ROOT}",
-        config.IMAGE, "-p", str(config.PORT), "--telemetry", "off",
-    )
+    r = _docker(*run_command())
     if r.returncode != 0:
         raise DockerError("起動に失敗しました: " + (r.stderr.strip().splitlines() or ["不明なエラー"])[-1])
     _wait_healthy()

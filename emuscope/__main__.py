@@ -86,6 +86,9 @@ def cmd_doctor(args):
     if check("Docker が動いている", docker.daemon_ok(), "OrbStack / Docker を起動してください"):
         check("イメージがある", docker.image_exists(), "./emu build で作れます")
         if check("エミュレーターのコンテナが動いている", docker.is_running(), "./emu up で起動できます"):
+            mounts = docker.mounted_dirs()
+            check(f"鍵と証明書の場所が一致している（{config.EMU_ROOT}）", not mounts or str(config.EMU_ROOT) in mounts,
+                  f"コンテナは {mounts[0] if mounts else ''} を使っています。止めてから起動し直してください")
             check("ヘルスチェックに応答する", docker.healthy(), "./emu logs を確認してください")
             entries = docker.logs(50)
             check("テレメトリーが無効", any("telemetry: disabled" in e["message"] for e in entries) or not entries,

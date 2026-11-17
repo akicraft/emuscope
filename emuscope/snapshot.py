@@ -20,6 +20,7 @@ import json
 import re
 import shutil
 import uuid
+from pathlib import Path
 
 from botocore.exceptions import ClientError
 
@@ -33,10 +34,10 @@ SQS_ATTRS = ["VisibilityTimeout", "MessageRetentionPeriod", "DelaySeconds", "Max
              "ReceiveMessageWaitTimeSeconds", "RedrivePolicy", "Policy", "FifoQueue", "ContentBasedDeduplication"]
 
 
-def _dir(name):
+def _dir(name, directory=None):
     if not NAME_RE.match(name or ""):
         raise ValueError("スナップショット名は、英数字と . _ - だけで付けてください（64文字まで）。")
-    return config.SNAPSHOTS / name
+    return Path(directory or config.SNAPSHOTS) / name
 
 
 def _write(path, data):
@@ -232,13 +233,14 @@ def _ignore(codes, fn):
             raise
 
 
-def load(name, reset=False) -> dict:
+def load(name, reset=False, directory=None) -> dict:
     """スナップショットを戻す。
 
     reset=True なら、エミュレーターを再起動して空にしてから入れる（保存時と同じ状態になる）。
     reset=False なら、今の状態に重ねる（同じ名前のファイルや項目は上書き）。
+    directory を渡すと、既定の置き場所（config.SNAPSHOTS）の代わりにそこから読む。
     """
-    src = _dir(name)
+    src = _dir(name, directory)
     if not (src / "manifest.json").exists():
         raise KeyError(name)
     if reset:

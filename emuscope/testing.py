@@ -80,9 +80,12 @@ def reset() -> None:
     _guarded_client("sts")
 
 
-def load_snapshot(name: str, clean: bool = True) -> None:
-    """保存しておいた状態に戻す。clean=True なら、空にしてから入れる。"""
-    snapshot.load(name, reset=clean)
+def load_snapshot(name: str, clean: bool = True, directory=None) -> None:
+    """保存しておいた状態に戻す。clean=True なら、空にしてから入れる。
+
+    directory: スナップショットの置き場所。省略時は config.SNAPSHOTS（環境変数 EMU_SNAPSHOTS で変えられる）。
+    """
+    snapshot.load(name, reset=clean, directory=directory)
     boto3.DEFAULT_SESSION = None
 
 
