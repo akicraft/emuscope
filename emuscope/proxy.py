@@ -148,11 +148,49 @@ _calls = collections.deque(maxlen=MAX_CALLS)
 _calls_lock = threading.Lock()
 _ids = itertools.count(1)
 
+# 処理中の要求の数。中継は応答を返してから記録するので、集計を読む前に 0 になるのを待つ
+_inflight = 0
+_idle = threading.Condition()
+
+
+def wait_idle(timeout: float = 10.0) -> bool:
+    """処理中の要求がすべて記録し終わるまで待つ。待ち切れたら True。"""
+    with _idle:
+        return _idle.wait_for(lambda: _inflight == 0, timeout)
+
+
+# 操作ごとの集計。_calls と違って捨てないので、長いテストでも欠けない。
+# (service, operation) -> {"calls", "statuses", "errors", "clients", "ms", "firstId"}
+_stats = {}
+
 
 def _record(entry):
     with _calls_lock:
         entry["id"] = next(_ids)
         _calls.append(entry)
+        key = (entry["service"], entry["operation"])
+        st = _stats.get(key)
+        if st is None:
+            st = _stats[key] = {"calls": 0, "statuses": collections.Counter(), "errors": collections.Counter(),
+                                "clients": set(), "ms": 0.0, "firstId": entry["id"]}
+        st["calls"] += 1
+        st["statuses"][entry["status"]] += 1
+        if entry["error"]:
+            st["errors"][entry["error"]] += 1
+        if entry["client"]:
+            st["clients"].add(entry["client"])
+        st["ms"] += entry["ms"]
+
+
+def summary() -> list[dict]:
+    """操作ごとの集計。対応状況レポート（report.py）の材料になる。"""
+    with _calls_lock:
+        return [
+            {"service": service, "operation": operation, "calls": st["calls"],
+             "statuses": dict(st["statuses"]), "errors": dict(st["errors"]),
+             "clients": sorted(st["clients"]), "ms": round(st["ms"], 1), "firstId": st["firstId"]}
+            for (service, operation), st in _stats.items()
+        ]
 
 
 def calls_after(after_id=0):
@@ -181,6 +219,7 @@ def call_detail(call_id):
 def clear_calls():
     with _calls_lock:
         _calls.clear()
+        _stats.clear()
 
 
 def _show_body(data, content_type, total):
@@ -219,8 +258,20 @@ def _ssl_context():
 class ProxyHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     allowed_hosts = frozenset()
+    upstream = None  # (host, port, ssl_context か None)。None ならエミュレーター
 
     def _handle(self):
+        global _inflight
+        with _idle:
+            _inflight += 1
+        try:
+            self._relay()
+        finally:
+            with _idle:
+                _inflight -= 1
+                _idle.notify_all()
+
+    def _relay(self):
         started = time.time()
         # 宛先が 127.0.0.1 と明記されたリクエストだけ受ける（DNSリバインディング対策）
         if self.headers.get("Host") not in self.allowed_hosts:
@@ -270,8 +321,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         return self.rfile.read(length) if length else b""
 
+    def _connect(self):
+        if self.upstream is None:
+            return http.client.HTTPSConnection("127.0.0.1", config.PORT, context=_ssl_context(), timeout=120)
+        host, port, ctx = self.upstream
+        if ctx is None:  # テスト用の偽の上流は平文HTTP
+            return http.client.HTTPConnection(host, port, timeout=120)
+        return http.client.HTTPSConnection(host, port, context=ctx, timeout=120)
+
     def _forward(self, body):
-        conn = http.client.HTTPSConnection("127.0.0.1", config.PORT, context=_ssl_context(), timeout=120)
+        conn = self._connect()
         try:
             # Host を含め、ヘッダーは受け取ったまま送る
             conn.putrequest(self.command, self.path, skip_host=True, skip_accept_encoding=True)
@@ -306,9 +365,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
         pass
 
 
-def make_server(port=None):
-    port = port or config.PROXY_PORT
-    handler = type("EmuProxyHandler", (ProxyHandler,), {
-        "allowed_hosts": frozenset({f"127.0.0.1:{port}", f"localhost:{port}"}),
-    })
-    return ThreadingHTTPServer(("127.0.0.1", port), handler)  # 自分のMacからだけ届く
+def make_server(port=None, upstream=None):
+    """中継サーバーを作る（待ち受けは呼んだ側が serve_forever で始める）。
+
+    port=0 なら空いているポートを OS に選ばせる。実際の番号は server.server_address[1]。
+    upstream: (host, port, ssl_context か None)。省略時はエミュレーター。None の ssl_context は平文HTTP。
+    """
+    port = config.PROXY_PORT if port is None else port
+    handler = type("EmuProxyHandler", (ProxyHandler,), {"upstream": upstream})
+    server = ThreadingHTTPServer(("127.0.0.1", port), handler)  # 自分のMacからだけ届く
+    actual = server.server_address[1]
+    handler.allowed_hosts = frozenset({f"127.0.0.1:{actual}", f"localhost:{actual}"})
+    return server
+
+
+def url_of(server) -> str:
+    return f"http://127.0.0.1:{server.server_address[1]}"

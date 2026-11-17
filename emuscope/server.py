@@ -19,7 +19,7 @@ from pathlib import Path
 
 from botocore.exceptions import ClientError
 
-from . import __version__, catalog, config, docker, proxy, resources, snapshot
+from . import __version__, catalog, config, docker, proxy, report, resources, snapshot
 from .aws import EmulatorDown, NotEmulator, is_down
 
 STATIC = Path(__file__).parent / "static"
@@ -181,6 +181,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, proxy.calls_after(int(q.get("after", 0))))
         if path == "/api/calls/detail":
             return self._json(200, proxy.call_detail(int(q["id"])))
+        if path == "/api/calls/summary":
+            return self._json(200, report.build(proxy.summary(), docker.version()))
+        if path == "/api/calls/report":
+            rep = report.build(proxy.summary(), docker.version())
+            if q.get("format") == "json":
+                data, name = json.dumps(rep, ensure_ascii=False, indent=2).encode(), "emulator-report.json"
+            else:
+                data, name = report.to_markdown(rep).encode(), "emulator-report.md"
+            # 画面の中では開かせず、ファイルとして保存させる
+            return self._send(200, "application/octet-stream", data, DATA_CSP,
+                              {"Content-Disposition": f"attachment; filename={name}"})
         if path == "/api/logs":
             return self._json(200, {"entries": docker.logs(min(int(q.get("tail", 400)), 2000))})
         if path == "/api/snapshots":

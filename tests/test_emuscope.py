@@ -299,6 +299,11 @@ class LiveTest(unittest.TestCase):
         self.assertIn("NotImplemented", detail["resBody"]["text"])
         self.assertNotRegex(detail["reqHeaders"]["authorization"], r"Signature=[0-9a-f]{16}")  # 署名の値は残さない
 
+        _, summary = self.http.get("/api/calls/summary")  # 操作ごとの集計（対応状況レポート）
+        missing_ops = [(o["service"], o["operation"]) for o in summary["operations"] if o["result"] == "unimplemented"]
+        self.assertEqual(missing_ops, [("quicksight", "ListUsers")])
+        self.assertTrue(summary["emulator"])
+
         self.assertEqual(self.http.post("/api/calls/clear")[0], 200)
         self.assertEqual(self.http.get("/api/calls")[1]["calls"], [])
 

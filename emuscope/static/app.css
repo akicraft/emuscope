@@ -95,6 +95,11 @@ main.pane { margin: 16px 20px; background: var(--bg); box-shadow: var(--shadow);
 .toolbar:empty { display: none; }
 .toolbar input[type="text"] { width: 240px; }
 .toolbar .spacer { flex: 1; }
+.seg { display: inline-flex; }
+.seg .btn { border-radius: 0; }
+.seg .btn:first-child { border-radius: 2px 0 0 2px; }
+.seg .btn:last-child { border-radius: 0 2px 2px 0; margin-left: -1px; }
+.seg .btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .notice { background: var(--warn-bg); color: var(--warn-text); padding: 8px 20px; border-bottom: 1px solid var(--line); border-left: 4px solid var(--accent); }
 .pane-list { flex: 1 1 0; overflow: auto; min-height: 0; }
 .pane-list.dragover { outline: 2px dashed var(--sel); outline-offset: -6px; background: var(--row-sel); }

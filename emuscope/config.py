@@ -33,13 +33,15 @@ REGION = "us-east-1"
 UNSET_VARS = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"]
 
 
-def env_vars(proxy: bool = False) -> dict:
+def env_vars(proxy: bool | str = False) -> dict:
     """CLI や SDK をエミュレーターに向ける環境変数。
 
     proxy=True のときは中継サーバー経由にする。呼び出しが画面の「APIログ」に記録される。
+    proxy に URL の文字列を渡すと、その中継を通す（./emu record が自分で立てた中継など）。
     """
+    endpoint = proxy if isinstance(proxy, str) else (PROXY_ENDPOINT if proxy else ENDPOINT)
     return {
-        "AWS_ENDPOINT_URL": PROXY_ENDPOINT if proxy else ENDPOINT,
+        "AWS_ENDPOINT_URL": endpoint,
         "AWS_SHARED_CREDENTIALS_FILE": str(CREDENTIALS),
         "AWS_CONFIG_FILE": str(CONFIG),
         "AWS_CA_BUNDLE": str(CA),
@@ -50,7 +52,7 @@ def env_vars(proxy: bool = False) -> dict:
     }
 
 
-def child_env(proxy: bool = False) -> dict:
+def child_env(proxy: bool | str = False) -> dict:
     """今の環境から本物向けの変数を外し、エミュレーター用の変数を足したもの。"""
     env = {k: v for k, v in os.environ.items() if k not in UNSET_VARS}
     env.update(env_vars(proxy))
