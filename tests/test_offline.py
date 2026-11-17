@@ -264,5 +264,103 @@ class RecordCommandTest(UpstreamTestCase):
         self.assertIn("./emu record", err.getvalue())
 
 
+# ---- pytest プラグイン ----------------------------------------------------------
+
+try:
+    import pytest  # noqa: F401
+    HAVE_PYTEST = True
+except ImportError:
+    HAVE_PYTEST = False
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# 一時フォルダに置く conftest.py。Docker とエミュレーターを使う部分を差し替え、偽の上流を立てる
+PLUGIN_CONFTEST = '''
+import json, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
+
+import emuscope.docker, emuscope.testing
+
+class Up(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        op = self.headers.get("X-Amz-Target", "").rsplit(".", 1)[-1]
+        status = 501 if op.startswith("Missing") else 200
+        data = json.dumps({"__type": "NotImplemented"} if status == 501 else {}).encode()
+        self.send_response(status); self.send_header("Content-Length", str(len(data))); self.end_headers()
+        self.wfile.write(data)
+    def log_message(self, *a): pass
+
+_up = ThreadingHTTPServer(("127.0.0.1", 0), Up)
+threading.Thread(target=_up.serve_forever, daemon=True).start()
+emuscope.testing.RECORD_UPSTREAM = ("127.0.0.1", _up.server_address[1], None)
+LOADED = []
+for target, value in [("emuscope.docker.up", False), ("emuscope.docker.version", "1.0.385"),
+                      ("emuscope.testing._guarded_client", None)]:
+    mock.patch(target, return_value=value).start()
+mock.patch("emuscope.testing.load_snapshot", lambda name, **kw: LOADED.append(name)).start()
+'''
+
+PLUGIN_TESTS = '''
+import os, urllib.request, urllib.error
+import pytest
+import conftest
+
+def hit(op):
+    req = urllib.request.Request(os.environ["AWS_ENDPOINT_URL"] + "/", data=b"{}", method="POST", headers={
+        "Authorization": "AWS4-HMAC-SHA256 Credential=AK/20261117/us-east-1/athena/aws4_request, SignedHeaders=host, Signature=00",
+        "X-Amz-Target": "Svc." + op})
+    try:
+        urllib.request.urlopen(req).close()
+    except urllib.error.HTTPError as e:
+        e.close()
+
+def test_calls(emulator):
+    if os.environ["EMU_TEST_OP"]:  # 記録しないときの接続先は本物のエミュレーターなので、呼ばない
+        hit(os.environ["EMU_TEST_OP"])
+
+@pytest.mark.emu_snapshot("base")
+def test_snapshot_marker(emu_client):
+    assert conftest.LOADED == ["base"]
+    assert callable(emu_client)
+'''
+
+
+@unittest.skipUnless(HAVE_PYTEST, "pytest が入っていない")
+class PytestPluginTest(unittest.TestCase):
+    def run_pytest(self, *args, op="ListWorkGroups"):
+        import os
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "conftest.py").write_text(PLUGIN_CONFTEST)
+            (Path(d) / "test_sample.py").write_text(PLUGIN_TESTS)
+            env = {**os.environ, "PYTHONPATH": str(ROOT), "EMU_TEST_OP": op}
+            r = subprocess.run([sys.executable, "-m", "pytest", "-p", "emuscope.pytest_plugin", "-W", "error::pytest.PytestUnknownMarkWarning",
+                                "-q", "-p", "no:cacheprovider", *args], cwd=d, env=env, capture_output=True, text=True, timeout=120)
+            files = {p.name: p.read_text() for p in Path(d).glob("report.*")}
+        return r.returncode, r.stdout + r.stderr, files
+
+    def test_plain_run_passes(self):
+        code, out, _ = self.run_pytest(op="")
+        self.assertEqual(code, 0, out)
+
+    def test_strict_fails_on_missing_operations(self):
+        code, out, _ = self.run_pytest("--emu-strict", op="MissingThing")
+        self.assertEqual(code, 3, out)
+        self.assertIn("athena:MissingThing", out)
+        code, out, _ = self.run_pytest("--emu-strict")
+        self.assertEqual(code, 0, out)
+
+    def test_report_is_written(self):
+        code, out, files = self.run_pytest("--emu-report", "report.json", op="MissingThing")
+        self.assertEqual(code, 0, out)  # --emu-strict がなければ落とさない
+        data = json.loads(files["report.json"])
+        self.assertEqual(data["totals"]["unimplemented"], 1)
+        self.assertIn("athena:MissingThing", out)
+
+
 if __name__ == "__main__":
     unittest.main()
