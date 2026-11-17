@@ -70,7 +70,7 @@ def connect_info(proxy_enabled):
          "body": "このシェルで打つ aws コマンドや、ここから起動したプログラムが、すべてエミュレーターに向きます。ターミナルを閉じれば元に戻ります。",
          "code": f"eval \"$({emu} env)\""},
         {"title": "設定される環境変数（直接つなぐ場合）",
-         "body": "エンドポイントは HTTPS で、証明書は自己署名です。AWS CLI v2・Boto3・Go の SDK は AWS_CA_BUNDLE を読みます。"
+         "body": "エンドポイントは HTTPS で、証明書は自己署名です。AWS CLI v2・Boto3・Go の SDK は AWS_CA_BUNDLE、Node.js は NODE_EXTRA_CA_CERTS を読みます。"
                  "S3 は localhost ではなく 127.0.0.1 を使ってください。",
          "code": exports(config.env_vars())},
     ]
@@ -81,6 +81,14 @@ def connect_info(proxy_enabled):
         {"title": "Boto3（Python）",
          "body": "上の環境変数があれば、コードは本番と同じでかまいません。エンドポイントや鍵をコードに書く必要はありません。",
          "code": 'import boto3\n\ns3 = boto3.client("s3")\nprint(s3.list_buckets()["Buckets"])'},
+        {"title": "テストで使う（pytest）",
+         "body": "フィクスチャ emu_client で、エミュレーターにつながったクライアントを作れます。"
+                 "--emu-strict を付けると、未実装の操作を呼んだテストがあったときに失敗になります。",
+         "code": 'def test_bucket(emu_client):\n    s3 = emu_client("s3")\n    s3.create_bucket(Bucket="demo")\n\n'
+                 f"# 実行: {emu} run -- pytest --emu-strict --emu-report compat.md"},
+        {"title": "使っているAPIが動くか調べる",
+         "body": "テストを一通り回すと、使った操作のうちエミュレーターで未実装のものが表になります。画面は要りません。",
+         "code": f"{emu} record -- python -m unittest\n{emu} record --strict --out compat.md -- npm test"},
         {"title": "テストで使う（unittest）",
          "body": "emuscope.testing を使うと、テストの前にエミュレーターを起動し、接続先を切り替えます。reset() で中身を空にできます。",
          "code": "from emuscope.testing import EmulatorTestCase\n\n\nclass MyTest(EmulatorTestCase):\n    def test_bucket(self):\n"
@@ -90,7 +98,7 @@ def connect_info(proxy_enabled):
         {"title": "ほかのSDK（未検証）",
          "body": "AWSのドキュメントによると、証明書の渡し方がSDKごとに違います。ここでは動作を確かめていません。"
                  "中継を通す（HTTP）なら、証明書の設定は不要なはずです。",
-         "code": f"# JavaScript v3\nexport NODE_EXTRA_CA_CERTS={config.CA}\n\n# Rust / .NET\nexport SSL_CERT_FILE={config.CA}"},
+         "code": f"# JavaScript v3（NODE_EXTRA_CA_CERTS は上の環境変数に含まれています）\n\n# Rust / .NET\nexport SSL_CERT_FILE={config.CA}"},
     ]
     return {"sections": sections, "root": str(config.ROOT)}
 

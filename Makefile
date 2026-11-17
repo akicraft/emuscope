@@ -8,6 +8,7 @@
 #   make smoke    AWS CLI から S3 と DynamoDB を一通り操作
 #   make boto3    同じ確認を Boto3 から
 #   make test     emuscope 自体のテスト（エミュレーターの中身は消える）
+#   make test-offline  エミュレーターなしで走るテストだけ
 #   make example  サンプルアプリのテスト（同上）
 #   make doctor   うまく動かないときの点検
 #   make env      環境変数を表示   使い方: eval "$(make -s env)"
@@ -19,7 +20,7 @@ AWS := $(EMU) aws
 BUCKET := emu-trial-bucket
 TABLE  := emu-trial-table
 
-.PHONY: dev build up down viewer seed health whoami smoke boto3 test example doctor env logs clean
+.PHONY: dev build up down viewer seed health whoami smoke boto3 test test-offline example doctor env logs clean
 
 dev:
 	@$(EMU) dev
@@ -70,6 +71,10 @@ boto3:
 
 test:
 	@$(EMU) run -- .venv/bin/python -m unittest discover -s tests
+
+test-offline:
+	@$(EMU) --version > /dev/null  # 初回なら .venv を作る（エミュレーターは起動しない）
+	@.venv/bin/python -m unittest tests.test_offline
 
 example:
 	@$(EMU) run -- .venv/bin/python -m unittest discover -s examples -v

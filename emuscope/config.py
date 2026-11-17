@@ -60,6 +60,8 @@ def env_vars(proxy: bool | str = False) -> dict:
         "AWS_SHARED_CREDENTIALS_FILE": str(CREDENTIALS),
         "AWS_CONFIG_FILE": str(CONFIG),
         "AWS_CA_BUNDLE": str(CA),
+        # JavaScript（Node.js）の SDK は AWS_CA_BUNDLE ではなくこちらを読む（未検証）
+        "NODE_EXTRA_CA_CERTS": str(CA),
         "AWS_EC2_METADATA_DISABLED": "true",
         "AWS_DISABLE_HOST_PREFIX_INJECTION": "true",
         "AWS_REGION": REGION,
